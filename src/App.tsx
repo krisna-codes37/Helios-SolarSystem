@@ -2,17 +2,20 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { Stars, OrbitControls, Html } from '@react-three/drei'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowDown, ArrowRight, ArrowUpRight, Check, ChevronDown, CircleHelp, Github, Globe2, Menu, Pause, Play, Plus, RotateCcw, Search, Sun, Volume2, X, Zap } from 'lucide-react'
-import { Suspense, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import { formatDistance, missions, moons, planets, type Planet } from './data'
 
 type View = 'explore' | 'planets' | 'missions' | 'compare'
 
-function PlanetMesh({ planet, index, selected, onSelect, speed, paused, showOrbits }: { planet: Planet; index: number; selected: boolean; onSelect: () => void; speed: number; paused: boolean; showOrbits: boolean }) {
+function PlanetMesh({ planet, index, selected, onSelect, speed, paused, showOrbits, compareScale }: { planet: Planet; index: number; selected: boolean; onSelect: () => void; speed: number; paused: boolean; showOrbits: boolean; compareScale: boolean }) {
   const ref = useRef<THREE.Mesh>(null)
   const angle = useRef(index * 0.75)
   const orbit = 1.45 + index * 0.59
-  const size = [0.105, 0.15, 0.16, 0.13, 0.47, 0.39, 0.29, 0.27][index]
+  const size = compareScale
+    ? Math.cbrt(planet.radius / 6371) * 0.16
+    : [0.105, 0.15, 0.16, 0.13, 0.47, 0.39, 0.29, 0.27][index]
   useFrame((_, delta) => {
     if (!paused) angle.current += delta * speed * (0.16 / (1 + index * 0.37))
     if (ref.current) {
@@ -42,7 +45,38 @@ function PlanetMesh({ planet, index, selected, onSelect, speed, paused, showOrbi
   </>
 }
 
-function SolarScene({ selected, setSelected, speed, paused, showOrbits }: { selected: Planet; setSelected: (planet: Planet) => void; speed: number; paused: boolean; showOrbits: boolean }) {
+function CameraFocus({ selected, speed, paused, controls }: { selected: Planet; speed: number; paused: boolean; controls: React.RefObject<OrbitControlsImpl | null> }) {
+  const elapsed = useRef(0)
+  const previous = useRef(selected.name)
+  const moving = useRef(false)
+  const focus = useRef(new THREE.Vector3())
+  const destination = useRef(new THREE.Vector3())
+  const offset = new THREE.Vector3(0, 2.7, 3.2)
+  useEffect(() => {
+    if (previous.current !== selected.name) moving.current = true
+    previous.current = selected.name
+  }, [selected.name])
+  useFrame(({ camera }, delta) => {
+    if (!moving.current) return
+    if (!paused) elapsed.current += delta * speed
+    const index = planets.findIndex((planet) => planet.name === selected.name)
+    const radius = 1.45 + index * 0.59
+    const angle = index * 0.75 + elapsed.current * (0.16 / (1 + index * 0.37))
+    focus.current.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius)
+    destination.current.copy(focus.current).add(offset)
+    const blend = 1 - Math.exp(-3.2 * delta)
+    camera.position.lerp(destination.current, blend)
+    if (controls.current) {
+      controls.current.target.lerp(focus.current, blend)
+      controls.current.update()
+      if (controls.current.target.distanceTo(focus.current) < 0.025 && camera.position.distanceTo(destination.current) < 0.04) moving.current = false
+    }
+  })
+  return null
+}
+
+function SolarScene({ selected, setSelected, speed, paused, showOrbits, compareScale }: { selected: Planet; setSelected: (planet: Planet) => void; speed: number; paused: boolean; showOrbits: boolean; compareScale: boolean }) {
+  const controls = useRef<OrbitControlsImpl | null>(null)
   return <Canvas camera={{ position: [0, 12, 19], fov: 38 }} dpr={[1, 1.55]} gl={{ antialias: true, alpha: true }}>
     <color attach="background" args={['#080b12']} />
     <fog attach="fog" args={['#080b12', 22, 42]} />
@@ -53,8 +87,9 @@ function SolarScene({ selected, setSelected, speed, paused, showOrbits }: { sele
       <meshBasicMaterial color="#ffc977" />
     </mesh>
     <mesh><sphereGeometry args={[0.64, 32, 32]} /><meshBasicMaterial color="#ffac49" transparent opacity={0.08} side={THREE.BackSide} /></mesh>
-    {planets.map((p, i) => <PlanetMesh key={p.name} planet={p} index={i} selected={selected.name === p.name} onSelect={() => setSelected(p)} speed={speed} paused={paused} showOrbits={showOrbits} />)}
-    <OrbitControls makeDefault enablePan={false} minDistance={7} maxDistance={30} minPolarAngle={0.45} maxPolarAngle={1.47} rotateSpeed={0.38} zoomSpeed={0.75} />
+    {planets.map((p, i) => <PlanetMesh key={p.name} planet={p} index={i} selected={selected.name === p.name} onSelect={() => setSelected(p)} speed={speed} paused={paused} showOrbits={showOrbits} compareScale={compareScale} />)}
+    <OrbitControls ref={controls} makeDefault enablePan={false} minDistance={7} maxDistance={30} minPolarAngle={0.45} maxPolarAngle={1.47} rotateSpeed={0.38} zoomSpeed={0.75} />
+    <CameraFocus selected={selected} speed={speed} paused={paused} controls={controls} />
   </Canvas>
 }
 
@@ -64,6 +99,7 @@ function App() {
   const [paused, setPaused] = useState(false)
   const [speed, setSpeed] = useState(1)
   const [showOrbits, setShowOrbits] = useState(true)
+  const [compareScale, setCompareScale] = useState(false)
   const [query, setQuery] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [compare, setCompare] = useState<Planet>(planets[3])
@@ -72,7 +108,7 @@ function App() {
   const [quizAnswer, setQuizAnswer] = useState('')
   const [mobileMenu, setMobileMenu] = useState(false)
   const [sound, setSound] = useState(false)
-  const visibleResults = [...planets.map(p => ({ name: p.name, kind: 'PLANET', planet: p })), ...moons.map(m => ({ name: m.name, kind: 'MOON', planet: planets.find(p => p.name === m.parent)! }))].filter(x => x.name.toLowerCase().includes(query.toLowerCase())).slice(0, 5)
+  const visibleResults = [...planets.map(p => ({ name: p.name, kind: 'PLANET', planet: p })), ...moons.map(m => ({ name: m.name, kind: 'MOON', planet: planets.find(p => p.name === m.parent)! })), ...missions.map(m => ({ name: m.name, kind: 'MISSION', planet: planets.find(p => p.name === m.target) ?? planets[7] }))].filter(x => x.name.toLowerCase().includes(query.toLowerCase())).slice(0, 5)
 
   const choosePlanet = (planet: Planet) => { setSelected(planet); setView('explore'); setSearchOpen(false); setQuery('') }
   return <main className="app-shell">
@@ -85,8 +121,8 @@ function App() {
     </header>
 
     <AnimatePresence>{searchOpen && <motion.div className="search-popover" initial={{ opacity: 0, y: -7 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -7 }}>
-      <div className="search-input-wrap"><Search size={17} /><input autoFocus value={query} onChange={e => setQuery(e.target.value)} placeholder="Search planets, moons..." onKeyDown={e => { if (e.key === 'Escape') setSearchOpen(false); if (e.key === 'Enter' && visibleResults[0]) choosePlanet(visibleResults[0].planet) }} /><kbd>ESC</kbd><button className="bare-icon" onClick={() => setSearchOpen(false)}><X size={16} /></button></div>
-      <div className="search-results">{(query ? visibleResults : [{name:'Earth',kind:'PLANET',planet:planets[2]},{name:'Mars',kind:'PLANET',planet:planets[3]},{name:'Europa',kind:'MOON',planet:planets[4]}]).map(result => <button key={result.name} onClick={() => choosePlanet(result.planet)}><span className="result-orb" style={{background:result.planet.color}} /><span>{result.name}<small>{result.planet.type.toLowerCase()} · {result.kind.toLowerCase()}</small></span><ArrowUpRight size={15} /></button>)}{query && visibleResults.length === 0 && <p className="empty-result">No worlds found. Try another name.</p>}</div>
+      <div className="search-input-wrap"><Search size={17} /><input autoFocus value={query} onChange={e => setQuery(e.target.value)} placeholder="Search planets, moons, missions..." onKeyDown={e => { if (e.key === 'Escape') setSearchOpen(false); if (e.key === 'Enter' && visibleResults[0]) { choosePlanet(visibleResults[0].planet); if (visibleResults[0].kind === 'MISSION') setView('missions') } }} /><kbd>ESC</kbd><button className="bare-icon" onClick={() => setSearchOpen(false)}><X size={16} /></button></div>
+      <div className="search-results">{(query ? visibleResults : [{name:'Earth',kind:'PLANET',planet:planets[2]},{name:'Mars',kind:'PLANET',planet:planets[3]},{name:'Europa',kind:'MOON',planet:planets[4]}]).map(result => <button key={result.name} onClick={() => { choosePlanet(result.planet); if (result.kind === 'MISSION') setView('missions') }}><span className="result-orb" style={{background:result.planet.color}} /><span>{result.name}<small>{result.planet.type.toLowerCase()} · {result.kind.toLowerCase()}</small></span><ArrowUpRight size={15} /></button>)}{query && visibleResults.length === 0 && <p className="empty-result">No matches. Try a planet, moon, or mission.</p>}</div>
     </motion.div>}</AnimatePresence>
 
     <section className="hero" id="top">
@@ -102,10 +138,10 @@ function App() {
         <div className="explorer-topline"><div className="window-dots"><i /><i /><i /></div><div className="scene-title"><span className="live-dot" /> LIVE SIMULATION <span className="scene-separator">/</span> HELIOCENTRIC VIEW</div><button className="scene-expand" aria-label="Reset camera" onClick={() => setSelected(planets[2])}><RotateCcw size={15} /></button></div>
         <div className="scene-content" style={{'--scene-display':showOrbits ? 'block' : 'none'} as React.CSSProperties}>
           <div className="scene-backdrop-grid" /><div className="scene-vignette" />
-          <div className="scene-canvas"><Suspense fallback={<div className="canvas-fallback">Preparing the observatory…</div>}><SolarScene selected={selected} setSelected={setSelected} speed={speed} paused={paused} showOrbits={showOrbits} /></Suspense></div>
+          <div className="scene-canvas"><Suspense fallback={<div className="canvas-fallback">Preparing the observatory…</div>}><SolarScene selected={selected} setSelected={setSelected} speed={speed} paused={paused} showOrbits={showOrbits} compareScale={compareScale} /></Suspense></div>
           <div className="scene-axis axis-x" /><div className="scene-axis axis-y" />
           <div className="scene-coordinate"><span>SIMULATION DATE</span><strong>SEP 28, 2026</strong><small>J2000 · HELIOCENTRIC</small></div>
-          <div className="scene-scale"><span>SCENE SCALE</span><button className="scale-pill active" title="Distances are compressed for readability">Exploration</button><button className="scale-pill" title="Planet sizes are adjusted to be easier to compare">Compare</button></div>
+          <div className="scene-scale"><span>SCENE SCALE</span><button className={compareScale?'scale-pill':'scale-pill active'} onClick={() => setCompareScale(false)} title="Distances are compressed for readability">Explore</button><button className={compareScale?'scale-pill active':'scale-pill'} onClick={() => setCompareScale(true)} title="Planet sizes are adjusted to be easier to compare">Compare sizes</button></div>
           <AnimatePresence mode="wait"><motion.aside className="planet-card" key={selected.name} initial={{opacity:0,x:14}} animate={{opacity:1,x:0}} exit={{opacity:0,x:8}} transition={{duration:.22}}>
             <div className="card-kicker"><span className="live-dot" /> SELECTED WORLD <button className="bare-icon" aria-label="Close details"><X size={14} /></button></div><div className="planet-card-title"><span className="mini-planet" style={{background:selected.color}} /><div><span className="planet-type">{selected.type}</span><h3>{selected.name}</h3></div><ArrowUpRight size={15} /></div><p className="planet-desc">{selected.description}</p>
             <div className="planet-metrics"><div><span>FROM THE SUN</span><strong>{formatDistance(selected.distance)}</strong></div><div><span>ORBITAL PERIOD</span><strong>{selected.period.toLocaleString()} <small>days</small></strong></div><div><span>RADIUS</span><strong>{selected.radius.toLocaleString()} <small>km</small></strong></div><div><span>KNOWN MOONS</span><strong>{selected.moons}</strong></div></div><div className="planet-fact"><span>✳</span><p>{selected.fact}</p></div><button className="card-link" onClick={() => setView('planets')}>Explore {selected.name} <ArrowRight size={14} /></button>
