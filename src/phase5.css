@@ -1,0 +1,12 @@
+.space-effects{position:fixed;inset:0;width:100vw;height:100vh;z-index:0;pointer-events:none;mix-blend-mode:screen;opacity:.68}
+.app-shell{z-index:1;isolation:isolate;background:radial-gradient(ellipse at 84% 2%,rgba(30,37,53,.2),transparent 24%),transparent}
+body{min-width:320px;overflow-x:clip}
+.app-shell>header,.app-shell>section,.app-shell>footer{position:relative;z-index:2}
+.topbar{background:rgba(8,11,18,.76)}
+.search-trigger{gap:9px}
+.hero-art,.closing,.moon-visual,.trajectory-map{isolation:isolate}
+.hero-art::after,.closing::after,.moon-visual::after,.trajectory-map::after{content:"";position:absolute;inset:-20%;z-index:-1;pointer-events:none;background:radial-gradient(ellipse at 50% 48%,rgba(73,116,164,.075),transparent 55%);animation:nebula-drift 26s ease-in-out infinite alternate}
+.hero-art::after{animation-duration:22s}.closing::after{animation-duration:29s;animation-direction:alternate-reverse}.trajectory-map::after{animation-duration:32s}
+@keyframes nebula-drift{from{transform:translate3d(-2%,-1%,0) scale(.96);opacity:.5}to{transform:translate3d(2%,1%,0) scale(1.06);opacity:1}}
+.view-drawer{backdrop-filter:blur(18px)}
+@media(prefers-reduced-motion:reduce){.space-effects{display:none}.hero-art::after,.closing::after,.moon-visual::after,.trajectory-map::after{animation:none}}
