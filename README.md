@@ -20,16 +20,19 @@ npm run preview
 
 - React, TypeScript, Vite, Three.js, React Three Fiber, and Drei
 - Interactive Sun, eight planets, orbit paths, starfield, Saturn's rings, and Earth's atmospheric glow
-- Orbit controls, planet selection, simulation pause and speed controls
-- Searchable planet and moon index
+- An instanced asteroid belt, five named dwarf planets, and a selected-world focus transition
+- Orbit controls, simulation pause, speed controls, date stepping, and visual size comparison
+- Searchable planet, moon, dwarf planet, and mission index
 - Planet facts, side-by-side comparison, and gravity-based weight calculator
-- Curated moon explorer, mission archive, and an interactive quiz
+- Curated moon explorer, mission archive, schematic trajectories, and an interactive quiz
+- Short explainers for common Solar System questions and an orbital-age calculator
+- Solar System statistics with a dated moon-count baseline
 - Responsive mobile layouts, reduced-motion support, and keyboard-accessible controls
 - No API key or backend required; astronomy facts are bundled as static data
 
 ## Visualization notes
 
-Planet positions and sizes are deliberately compressed and exaggerated for legibility. The simulation is an educational visualization, not a real-time ephemeris. Moon counts change as discoveries are confirmed; the displayed baseline is cited to NASA's published Solar System facts. Some per-planet moon counts reflect NASA pages updated in August 2026.
+Planet positions and sizes are deliberately compressed and exaggerated for legibility. The simulation is an educational visualization, not a real-time ephemeris; trajectory lines are schematic. Moon counts change as discoveries are confirmed. The 891+ system-wide count is NASA's baseline published March 25, 2025; per-planet giant-moon counts reflect NASA pages updated in August 2026.
 
 ## Sources
 

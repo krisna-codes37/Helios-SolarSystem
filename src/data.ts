@@ -25,6 +25,14 @@ export const moons = [
   { name:'Enceladus', parent:'Saturn', color:'#e2e6df', note:'An ocean moon with icy plumes' },
 ]
 
+export const dwarfPlanets = [
+  { name:'Ceres', region:'Asteroid belt', color:'#b6ad9f', fact:'The only dwarf planet in the inner Solar System.' },
+  { name:'Pluto', region:'Kuiper Belt', color:'#c99d80', fact:'A complex world with mountains of water ice and a thin atmosphere.' },
+  { name:'Haumea', region:'Kuiper Belt', color:'#b2c4c5', fact:'A rapidly spinning world with an elongated shape.' },
+  { name:'Makemake', region:'Kuiper Belt', color:'#c9a58e', fact:'A distant icy world with a reddish surface.' },
+  { name:'Eris', region:'Scattered disc', color:'#d0c6b8', fact:'A distant dwarf planet that helped prompt the modern planet definition.' },
+]
+
 export const missions = [
   { name:'Voyager 1', agency:'NASA', year:1977, target:'Interstellar space', status:'ACTIVE', detail:'The most distant human-made object, carrying a message from Earth.' },
   { name:'Cassini–Huygens', agency:'NASA / ESA / ASI', year:1997, target:'Saturn', status:'COMPLETE', detail:'Revealed Saturn’s rings and explored the moons Titan and Enceladus.' },
