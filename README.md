@@ -20,6 +20,8 @@ npm run preview
 
 - React, TypeScript, Vite, Three.js, React Three Fiber, and Drei
 - Interactive Sun, eight planets, orbit paths, starfield, Saturn's rings, and Earth's atmospheric glow
+- JPL approximate planetary positions from date-dependent Keplerian elements: elliptical paths, changing orbital speed, eccentricity, inclination, AU-based semimajor axes, and sidereal spin rates (including retrograde rotation)
+- Full-screen 3D controls, optional planet tags, synthesized interface sounds, and a spacetime-curvature teaching view
 - An instanced asteroid belt, five named dwarf planets, and a selected-world focus transition
 - Orbit controls, simulation pause, speed controls, date stepping, and visual size comparison
 - Searchable planet, moon, dwarf planet, and mission index
@@ -32,7 +34,7 @@ npm run preview
 
 ## Visualization notes
 
-Planet positions and sizes are deliberately compressed and exaggerated for legibility. The simulation is an educational visualization, not a real-time ephemeris; trajectory lines are schematic. Moon counts change as discoveries are confirmed. The 891+ system-wide count is NASA's baseline published March 25, 2025; per-planet giant-moon counts reflect NASA pages updated in August 2026.
+Planet distances use AU-based semimajor axes and are kept in the correct relative proportions. Planet and Sun radii are enlarged so they remain visible at system scale; the “Relative” size option preserves planet-to-planet radius ratios. Positions use JPL's approximate Keplerian elements and corrections, which are useful within their published date range but are less accurate than a full JPL Horizons ephemeris. The asteroid belt is an illustrative, simplified population. The Einstein view bends a 2D grid as a teaching analogy; it is not a literal model of four-dimensional spacetime. Mission trajectories remain schematic. Moon counts change as discoveries are confirmed. The 891+ system-wide count is NASA's baseline published March 25, 2025; per-planet giant-moon counts reflect NASA pages updated in August 2026.
 
 ## Sources
 
@@ -42,6 +44,10 @@ Planet positions and sizes are deliberately compressed and exaggerated for legib
 - [NASA Saturn moons](https://science.nasa.gov/saturn/moons/)
 - [NASA Uranus moons](https://science.nasa.gov/uranus/moons/)
 - [NASA Neptune moons](https://science.nasa.gov/neptune/moons/)
+- [JPL approximate positions of the planets](https://ssd.jpl.nasa.gov/planets/approx_pos.html)
+- [JPL Horizons ephemerides](https://ssd.jpl.nasa.gov/horizons/)
+- [NASA: Orbits and Kepler's laws](https://science.nasa.gov/solar-system/orbits-and-keplers-laws/)
+- [NASA Goddard planetary fact sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/)
 
 ## Deploy
 

@@ -1,7 +1,7 @@
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Stars, OrbitControls, Html } from '@react-three/drei'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowDown, ArrowRight, ArrowUpRight, Check, ChevronDown, CircleHelp, Github, Globe2, Menu, Pause, Play, Plus, RotateCcw, Search, Sun, X, Zap } from 'lucide-react'
+import { ArrowDown, ArrowRight, ArrowUpRight, Check, ChevronDown, CircleHelp, Github, Globe2, Maximize2, Menu, Orbit, Pause, Play, Plus, RotateCcw, Search, Volume2, VolumeX, X, Zap } from 'lucide-react'
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
@@ -15,65 +15,111 @@ const explainers = [
   { question:'Why does Saturn have rings?', answer:'Saturn’s rings are countless pieces of ice and rock orbiting the planet. They may be fragments of moons or comets broken apart by gravity.' },
 ]
 
-function PlanetMesh({ planet, index, selected, onSelect, speed, paused, showOrbits, compareScale, dateOffsetDays }: { planet: Planet; index: number; selected: boolean; onSelect: () => void; speed: number; paused: boolean; showOrbits: boolean; compareScale: boolean; dateOffsetDays: number }) {
-  const ref = useRef<THREE.Mesh>(null)
-  const angle = useRef(index * 0.75)
-  const orbit = 1.45 + index * 0.59
-  const size = compareScale
-    ? Math.cbrt(planet.radius / 6371) * 0.16
-    : [0.105, 0.15, 0.16, 0.13, 0.47, 0.39, 0.29, 0.27][index]
-  useEffect(() => {
-    angle.current = index * 0.75 + (dateOffsetDays / planet.period) * Math.PI * 2
-  }, [dateOffsetDays, index, planet.period])
-  useFrame((_, delta) => {
-    if (!paused) angle.current += delta * speed * (0.16 / (1 + index * 0.37))
+const AU_SCENE = 0.3
+const J2000_UNIX_MS = new Date('2000-01-01T12:00:00Z').getTime()
+function keplerElements(planet: Planet, elapsedDays: number) {
+  const centuries = elapsedDays / 36525
+  return {
+    a: planet.semiMajorAU + planet.elementRates.a * centuries,
+    e: planet.eccentricity + planet.elementRates.e * centuries,
+    i: THREE.MathUtils.degToRad(planet.inclination + planet.elementRates.i * centuries),
+    longitude: planet.meanLongitude + planet.elementRates.L * centuries,
+    perihelion: planet.longitudePerihelion + planet.elementRates.perihelion * centuries,
+    node: planet.ascendingNode + planet.elementRates.node * centuries,
+  }
+}
+function orbitalPosition(planet: Planet, elapsedDays: number, focusScale = AU_SCENE) {
+  const elements = keplerElements(planet, elapsedDays)
+  const argument = elements.perihelion - elements.node
+  const correction = planet.name === 'Jupiter' ? [-.00012452,.06064060,-.35635438,38.35125]
+    : planet.name === 'Saturn' ? [.00025899,-.13434469,.87320147,38.35125]
+      : planet.name === 'Uranus' ? [.00058331,-.97731848,.17689245,7.67025]
+        : planet.name === 'Neptune' ? [-.00041348,.68346318,-.10162547,7.67025] : [0,0,0,0]
+  const meanDegrees = elements.longitude - elements.perihelion + correction[0] * centuriesSquared(elapsedDays) + correction[1] * Math.cos(THREE.MathUtils.degToRad(correction[3] * elapsedDays / 36525)) + correction[2] * Math.sin(THREE.MathUtils.degToRad(correction[3] * elapsedDays / 36525))
+  const meanUnwrapped = THREE.MathUtils.degToRad(meanDegrees % 360)
+  const mean = Math.atan2(Math.sin(meanUnwrapped), Math.cos(meanUnwrapped))
+  let eccentric = mean
+  for (let iteration = 0; iteration < 7; iteration++) eccentric -= (eccentric - elements.e * Math.sin(eccentric) - mean) / (1 - elements.e * Math.cos(eccentric))
+  const xPrime = elements.a * (Math.cos(eccentric) - elements.e)
+  const yPrime = elements.a * Math.sqrt(1 - elements.e ** 2) * Math.sin(eccentric)
+  const omega = THREE.MathUtils.degToRad(argument)
+  const node = THREE.MathUtils.degToRad(elements.node)
+  const { i } = elements
+  const x = (Math.cos(omega)*Math.cos(node)-Math.sin(omega)*Math.sin(node)*Math.cos(i))*xPrime + (-Math.sin(omega)*Math.cos(node)-Math.cos(omega)*Math.sin(node)*Math.cos(i))*yPrime
+  const y = (Math.cos(omega)*Math.sin(node)+Math.sin(omega)*Math.cos(node)*Math.cos(i))*xPrime + (-Math.sin(omega)*Math.sin(node)+Math.cos(omega)*Math.cos(node)*Math.cos(i))*yPrime
+  const z = Math.sin(omega)*Math.sin(i)*xPrime + Math.cos(omega)*Math.sin(i)*yPrime
+  return new THREE.Vector3(x * focusScale, z * focusScale, y * focusScale)
+}
+const centuriesSquared = (elapsedDays: number) => (elapsedDays / 36525) ** 2
+
+function PlanetMesh({ planet, selected, onSelect, showOrbits, showLabels, simulationClock, compareScale }: { planet: Planet; selected: boolean; onSelect: () => void; showOrbits: boolean; showLabels: boolean; simulationClock: { current: number }; compareScale: boolean }) {
+  const ref = useRef<THREE.Group>(null)
+  const spinRef = useRef<THREE.Mesh>(null)
+  const size = compareScale ? Math.max(0.005, planet.radius / 6371 * 0.018) : Math.max(0.04, planet.radius / 6371 * 0.026)
+  const orbitGeometry = useMemo(() => {
+    const elements = keplerElements(planet, (new Date('2026-09-28T12:00:00Z').getTime() - J2000_UNIX_MS) / 86_400_000)
+    const a = elements.a * AU_SCENE
+    const e = elements.e
+    const b = a * Math.sqrt(1 - e ** 2)
+    const omega = THREE.MathUtils.degToRad(elements.perihelion - elements.node)
+    const node = THREE.MathUtils.degToRad(elements.node)
+    const inclination = elements.i
+    const points = Array.from({ length: 181 }, (_, pointIndex) => {
+      const eccentric = pointIndex / 180 * Math.PI * 2
+      const xPrime = a * (Math.cos(eccentric) - e)
+      const yPrime = b * Math.sin(eccentric)
+      const x = (Math.cos(omega)*Math.cos(node)-Math.sin(omega)*Math.sin(node)*Math.cos(inclination))*xPrime + (-Math.sin(omega)*Math.cos(node)-Math.cos(omega)*Math.sin(node)*Math.cos(inclination))*yPrime
+      const y = (Math.cos(omega)*Math.sin(node)+Math.sin(omega)*Math.cos(node)*Math.cos(inclination))*xPrime + (-Math.sin(omega)*Math.sin(node)+Math.cos(omega)*Math.cos(node)*Math.cos(inclination))*yPrime
+      const z = Math.sin(omega)*Math.sin(inclination)*xPrime + Math.cos(omega)*Math.sin(inclination)*yPrime
+      return new THREE.Vector3(x, z, y)
+    })
+    const geometry = new THREE.BufferGeometry().setFromPoints(points)
+    return geometry
+  }, [planet.semiMajorAU, planet.eccentricity, planet.inclination, planet.meanLongitude, planet.longitudePerihelion, planet.ascendingNode, planet.elementRates])
+  useFrame(() => {
     if (ref.current) {
-      ref.current.position.set(Math.cos(angle.current) * orbit, 0, Math.sin(angle.current) * orbit)
-      ref.current.rotation.y += delta * 0.12
+      ref.current.position.copy(orbitalPosition(planet, simulationClock.current))
     }
+    if (spinRef.current) spinRef.current.rotation.y = (simulationClock.current * 24 * Math.PI * 2 / planet.rotationHours) % (Math.PI * 2)
   })
   return <>
-    {showOrbits && <mesh rotation-x={-Math.PI / 2} position={[0, -0.06, 0]}>
-      <ringGeometry args={[orbit - 0.003, orbit + 0.003, 160]} />
-      <meshBasicMaterial color={selected ? '#d8b98a' : '#536174'} transparent opacity={selected ? 0.37 : 0.19} side={THREE.DoubleSide} />
-    </mesh>}
-    <mesh ref={ref} onClick={(e) => { e.stopPropagation(); onSelect() }}>
-      <sphereGeometry args={[size, 40, 40]} />
-      <meshStandardMaterial color={planet.color} roughness={planet.name === 'Earth' ? 0.58 : 0.84} metalness={0.04} emissive={planet.color} emissiveIntensity={selected ? 0.25 : 0.035} />
-      {planet.name === 'Saturn' && <mesh rotation-x={-Math.PI / 2.5}>
-        <ringGeometry args={[size * 1.32, size * 2.2, 72]} />
-        <meshStandardMaterial color="#d3bd93" transparent opacity={0.76} side={THREE.DoubleSide} />
-      </mesh>}
-      {planet.name === 'Earth' && <mesh scale={1.12}>
-        <sphereGeometry args={[size, 32, 32]} /><meshBasicMaterial color="#6cbaff" transparent opacity={0.12} side={THREE.BackSide} />
-      </mesh>}
-      <Html distanceFactor={12} position={[0, size + 0.12, 0]} center>
+    {showOrbits && <lineLoop geometry={orbitGeometry}><lineBasicMaterial color={selected ? '#d8b98a' : '#718096'} transparent opacity={selected ? 0.52 : 0.26} /></lineLoop>}
+    <group ref={ref}>
+      <group rotation-z={THREE.MathUtils.degToRad(planet.axialTilt)}>
+        <mesh ref={spinRef} onClick={(e) => { e.stopPropagation(); onSelect() }}>
+          <sphereGeometry args={[size, 48, 48]} />
+          <meshStandardMaterial color={planet.color} roughness={planet.name === 'Earth' ? 0.58 : 0.84} metalness={0.04} emissive={planet.color} emissiveIntensity={selected ? 0.2 : 0.015} />
+          {planet.name === 'Saturn' && <mesh rotation-x={-Math.PI / 2}>
+            <ringGeometry args={[size * 1.32, size * 2.2, 72]} />
+            <meshStandardMaterial color="#d3bd93" transparent opacity={0.76} side={THREE.DoubleSide} />
+          </mesh>}
+          {planet.name === 'Earth' && <mesh scale={1.12}>
+            <sphereGeometry args={[size, 32, 32]} /><meshBasicMaterial color="#6cbaff" transparent opacity={0.12} side={THREE.BackSide} />
+          </mesh>}
+        </mesh>
+      </group>
+      {showLabels && <Html distanceFactor={14} position={[0, size + 0.08, 0]} center>
         <button className={`planet-label ${selected ? 'is-selected' : ''}`} onClick={(e) => { e.stopPropagation(); onSelect() }}>{planet.name}</button>
-      </Html>
-    </mesh>
+      </Html>}
+    </group>
   </>
 }
 
-function CameraFocus({ selected, speed, paused, controls, dateOffsetDays }: { selected: Planet; speed: number; paused: boolean; controls: React.RefObject<OrbitControlsImpl | null>; dateOffsetDays: number }) {
-  const elapsed = useRef(0)
+function CameraFocus({ selected, controls, simulationClock, focusRequest }: { selected: Planet; controls: React.RefObject<OrbitControlsImpl | null>; simulationClock: { current: number }; focusRequest: number }) {
   const previous = useRef(selected.name)
-  const previousDate = useRef(dateOffsetDays)
+  const previousDate = useRef(focusRequest)
   const moving = useRef(false)
   const focus = useRef(new THREE.Vector3())
   const destination = useRef(new THREE.Vector3())
-  const offset = new THREE.Vector3(0, 2.7, 3.2)
+  const offset = new THREE.Vector3(0, 0.8, 1.25)
   useEffect(() => {
-    if (previous.current !== selected.name || previousDate.current !== dateOffsetDays) moving.current = true
+    if (previous.current !== selected.name || previousDate.current !== focusRequest) moving.current = true
     previous.current = selected.name
-    previousDate.current = dateOffsetDays
-  }, [selected.name, dateOffsetDays])
+    previousDate.current = focusRequest
+  }, [selected.name, focusRequest])
   useFrame(({ camera }, delta) => {
     if (!moving.current) return
-    if (!paused) elapsed.current += delta * speed
-    const index = planets.findIndex((planet) => planet.name === selected.name)
-    const radius = 1.45 + index * 0.59
-    const angle = index * 0.75 + (dateOffsetDays / selected.period) * Math.PI * 2 + elapsed.current * (0.16 / (1 + index * 0.37))
-    focus.current.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius)
+    focus.current.copy(orbitalPosition(selected, simulationClock.current))
     destination.current.copy(focus.current).add(offset)
     const blend = 1 - Math.exp(-3.2 * delta)
     camera.position.lerp(destination.current, blend)
@@ -86,51 +132,98 @@ function CameraFocus({ selected, speed, paused, controls, dateOffsetDays }: { se
   return null
 }
 
-function AsteroidBelt() {
+function SimulationClock({ clock, speed, paused }: { clock: { current: number }; speed: number; paused: boolean }) {
+  useFrame((_, delta) => { if (!paused) clock.current += delta * speed * 2 })
+  return null
+}
+
+function AsteroidBelt({ simulationClock }: { simulationClock: { current: number } }) {
   const mesh = useRef<THREE.InstancedMesh>(null)
-  const asteroids = useMemo(() => Array.from({ length: 520 }, (_, i) => {
+  const updateAccumulator = useRef(0)
+  const asteroids = useMemo(() => Array.from({ length: 360 }, (_, i) => {
     const random = (seed: number) => {
       const value = Math.sin(seed * 127.1 + 311.7) * 43758.5453
       return value - Math.floor(value)
     }
     const angle = random(i + 1) * Math.PI * 2
-    const radius = 3.38 + random(i + 521) * 0.31
-    const size = 0.009 + random(i + 1041) * 0.021
-    return { x: Math.cos(angle) * radius, y: (random(i + 1561) - 0.5) * 0.16, z: Math.sin(angle) * radius, size }
+    const radius = 0.82 + random(i + 521) * 0.15
+    const size = 0.002 + random(i + 1041) * 0.004
+    return { angle, radius, y: (random(i + 1561) - 0.5) * 0.008, size }
   }), [])
-  useEffect(() => {
+  useFrame((_, delta) => {
     if (!mesh.current) return
+    updateAccumulator.current += delta
+    if (updateAccumulator.current < 0.12) return
+    updateAccumulator.current = 0
     const dummy = new THREE.Object3D()
     asteroids.forEach((asteroid, index) => {
-      dummy.position.set(asteroid.x, asteroid.y, asteroid.z)
+      const semiMajorAU = asteroid.radius / AU_SCENE
+      const meanMotion = Math.PI * 2 / (365.256 * semiMajorAU ** 1.5)
+      const angle = asteroid.angle + simulationClock.current * meanMotion
+      dummy.position.set(Math.cos(angle) * asteroid.radius, asteroid.y, Math.sin(angle) * asteroid.radius)
       dummy.scale.setScalar(asteroid.size)
       dummy.updateMatrix()
       mesh.current!.setMatrixAt(index, dummy.matrix)
     })
     mesh.current.instanceMatrix.needsUpdate = true
-  }, [asteroids])
+  })
   return <instancedMesh ref={mesh} args={[undefined, undefined, asteroids.length]}>
     <dodecahedronGeometry args={[1, 0]} />
     <meshStandardMaterial color="#9d9182" roughness={1} />
   </instancedMesh>
 }
 
-function SolarScene({ selected, setSelected, speed, paused, showOrbits, showAsteroids, compareScale, dateOffsetDays }: { selected: Planet; setSelected: (planet: Planet) => void; speed: number; paused: boolean; showOrbits: boolean; showAsteroids: boolean; compareScale: boolean; dateOffsetDays: number }) {
+function GravityGrid() {
+  const geometry = useMemo(() => {
+    const points: THREE.Vector3[] = []
+    const size = 3.9
+    const sample = 72
+    const heightAt = (x: number, z: number) => -0.9 / Math.sqrt(x * x + z * z + 0.12)
+    for (let row = 0; row <= 12; row++) {
+      const z = -size + row * size * 2 / 12
+      for (let column = 0; column <= sample; column++) {
+        const x = -size + column * size * 2 / sample
+        if (column < sample) {
+          const nextX = x + size * 2 / sample
+          points.push(new THREE.Vector3(x, heightAt(x, z), z), new THREE.Vector3(nextX, heightAt(nextX, z), z))
+        }
+      }
+    }
+    for (let column = 0; column <= 12; column++) {
+      const x = -size + column * size * 2 / 12
+      for (let row = 0; row <= sample; row++) {
+        const z = -size + row * size * 2 / sample
+        if (row < sample) {
+          const nextZ = z + size * 2 / sample
+          points.push(new THREE.Vector3(x, heightAt(x, z), z), new THREE.Vector3(x, heightAt(x, nextZ), nextZ))
+        }
+      }
+    }
+    return new THREE.BufferGeometry().setFromPoints(points)
+  }, [])
+  return <lineSegments geometry={geometry}><lineBasicMaterial color="#84b8cb" transparent opacity={0.34} /></lineSegments>
+}
+
+function SolarScene({ selected, setSelected, speed, paused, showOrbits, showAsteroids, showLabels, compareScale, elapsedDays, gravityMode, focusRequest }: { selected: Planet; setSelected: (planet: Planet) => void; speed: number; paused: boolean; showOrbits: boolean; showAsteroids: boolean; showLabels: boolean; compareScale: boolean; elapsedDays: number; gravityMode: boolean; focusRequest: number }) {
   const controls = useRef<OrbitControlsImpl | null>(null)
-  return <Canvas camera={{ position: [0, 12, 19], fov: 38 }} dpr={[1, 1.55]} gl={{ antialias: true, alpha: true }}>
+  const simulationClock = useRef(elapsedDays)
+  useEffect(() => { simulationClock.current = elapsedDays }, [elapsedDays])
+  return <Canvas camera={{ position: [0, 18, 27], fov: 42 }} dpr={[1, 1.55]} gl={{ antialias: true, alpha: true }}>
     <color attach="background" args={['#080b12']} />
-    <fog attach="fog" args={['#080b12', 22, 42]} />
-    <ambientLight intensity={0.3} /><pointLight position={[0, 0, 0]} intensity={150} color="#ffbf67" distance={23} decay={1.65} />
-    <Stars radius={90} depth={55} count={2100} factor={3.2} saturation={0.1} fade speed={0.25} />
+    <fog attach="fog" args={['#080b12', 34, 56]} />
+    <ambientLight intensity={0.56} /><pointLight position={[0, 0, 0]} intensity={110} color="#ffbf67" distance={42} decay={1.65} />
+    <Stars radius={90} depth={55} count={1500} factor={3.2} saturation={0.1} fade speed={0.25} />
     <mesh>
-      <sphereGeometry args={[0.49, 48, 48]} />
-      <meshBasicMaterial color="#ffc977" />
+      <sphereGeometry args={[0.03, 64, 64]} />
+      <meshBasicMaterial color="#fff0bd" toneMapped={false} />
     </mesh>
-    <mesh><sphereGeometry args={[0.64, 32, 32]} /><meshBasicMaterial color="#ffac49" transparent opacity={0.08} side={THREE.BackSide} /></mesh>
-    {showAsteroids && <AsteroidBelt />}
-    {planets.map((p, i) => <PlanetMesh key={p.name} planet={p} index={i} selected={selected.name === p.name} onSelect={() => setSelected(p)} speed={speed} paused={paused} showOrbits={showOrbits} compareScale={compareScale} dateOffsetDays={dateOffsetDays} />)}
-    <OrbitControls ref={controls} makeDefault enablePan={false} minDistance={2.5} maxDistance={30} minPolarAngle={0.45} maxPolarAngle={1.47} rotateSpeed={0.38} zoomSpeed={0.75} />
-    <CameraFocus selected={selected} speed={speed} paused={paused} controls={controls} dateOffsetDays={dateOffsetDays} />
+    {[0.042, 0.072, 0.11].map((radius, index) => <mesh key={radius}><sphereGeometry args={[radius, 40, 40]} /><meshBasicMaterial color={index === 0 ? '#ffbc5c' : '#ff9c42'} transparent opacity={[0.24, 0.09, 0.025][index]} side={THREE.BackSide} depthWrite={false} /></mesh>)}
+    {gravityMode && <GravityGrid />}
+    {showAsteroids && <AsteroidBelt simulationClock={simulationClock} />}
+    {planets.map(p => <PlanetMesh key={p.name} planet={p} selected={selected.name === p.name} onSelect={() => setSelected(p)} showOrbits={showOrbits} showLabels={showLabels} compareScale={compareScale} simulationClock={simulationClock} />)}
+    <SimulationClock clock={simulationClock} speed={speed} paused={paused} />
+    <OrbitControls ref={controls} makeDefault enablePan minDistance={0.65} maxDistance={48} minPolarAngle={0.05} maxPolarAngle={Math.PI - 0.05} rotateSpeed={0.55} zoomSpeed={0.85} />
+    <CameraFocus selected={selected} controls={controls} simulationClock={simulationClock} focusRequest={focusRequest} />
   </Canvas>
 }
 
@@ -142,6 +235,12 @@ function App() {
   const [showOrbits, setShowOrbits] = useState(true)
   const [showAsteroids, setShowAsteroids] = useState(true)
   const [showPlanetCard, setShowPlanetCard] = useState(true)
+  const [showLabels, setShowLabels] = useState(false)
+  const [gravityMode, setGravityMode] = useState(false)
+  const [soundEnabled, setSoundEnabled] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [pseudoFullscreen, setPseudoFullscreen] = useState(false)
+  const [focusRequest, setFocusRequest] = useState(0)
   const [compareScale, setCompareScale] = useState(false)
   const [simulationDate, setSimulationDate] = useState('2026-09-28')
   const [query, setQuery] = useState('')
@@ -154,6 +253,42 @@ function App() {
   const [quizAnswer, setQuizAnswer] = useState('')
   const [openExplainer, setOpenExplainer] = useState(0)
   const [mobileMenu, setMobileMenu] = useState(false)
+  const audioContext = useRef<AudioContext | null>(null)
+  const playUiSound = () => {
+    const Context = window.AudioContext
+    if (!Context || !audioContext.current) return
+    if (audioContext.current.state === 'suspended') void audioContext.current.resume()
+    const oscillator = audioContext.current.createOscillator()
+    const gain = audioContext.current.createGain()
+    oscillator.type = 'sine'
+    oscillator.frequency.setValueAtTime(720, audioContext.current.currentTime)
+    oscillator.frequency.exponentialRampToValueAtTime(480, audioContext.current.currentTime + 0.045)
+    gain.gain.setValueAtTime(0.045, audioContext.current.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, audioContext.current.currentTime + 0.055)
+    oscillator.connect(gain).connect(audioContext.current.destination)
+    oscillator.start()
+    oscillator.stop(audioContext.current.currentTime + 0.06)
+  }
+  const toggleSound = () => {
+    if (!soundEnabled && typeof window !== 'undefined' && window.AudioContext) {
+      audioContext.current ??= new window.AudioContext()
+      void audioContext.current.resume()
+    }
+    setSoundEnabled(enabled => !enabled)
+  }
+  const toggleFullscreen = async () => {
+    const scene = document.querySelector('.explorer-shell')
+    if (!scene) return
+    if (pseudoFullscreen) { setPseudoFullscreen(false); return }
+    if (!document.fullscreenEnabled || !scene.requestFullscreen) { setPseudoFullscreen(true); return }
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen()
+      else await scene.requestFullscreen()
+    } catch (error) {
+      console.error('Fullscreen request was denied by the browser.', error)
+      setPseudoFullscreen(true)
+    }
+  }
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -163,10 +298,20 @@ function App() {
       if (event.key === 'Escape') {
         setSearchOpen(false)
         setMobileMenu(false)
+        setPseudoFullscreen(false)
       }
     }
     document.addEventListener('keydown', onShortcut)
     return () => document.removeEventListener('keydown', onShortcut)
+  }, [])
+  useEffect(() => {
+    const updateFullscreen = () => {
+      const active = Boolean(document.fullscreenElement)
+      setIsFullscreen(active)
+      if (active) setPseudoFullscreen(false)
+    }
+    document.addEventListener('fullscreenchange', updateFullscreen)
+    return () => document.removeEventListener('fullscreenchange', updateFullscreen)
   }, [])
   const visibleResults = [...planets.map(p => ({ name: p.name, kind: 'PLANET', planet: p })), ...moons.map(m => ({ name: m.name, kind: 'MOON', planet: planets.find(p => p.name === m.parent)! })), ...dwarfPlanets.map(p => ({ name: p.name, kind: 'DWARF PLANET', planet: null })), ...missions.map(m => ({ name: m.name, kind: 'MISSION', planet: planets.find(p => p.name === m.target) ?? planets[7] }))].filter(x => x.name.toLowerCase().includes(query.toLowerCase())).slice(0, 5)
 
@@ -178,8 +323,19 @@ function App() {
       document.getElementById('dwarf-planets')?.scrollIntoView({ behavior: 'smooth' })
       return
     }
+    if (result.kind === 'MOON') {
+      const moon = moons.find(item => item.name === result.name)
+      if (moon) setActiveMoon(moon.name)
+      document.getElementById('moon-explorer')?.scrollIntoView({ behavior: 'smooth' })
+      return
+    }
     if (result.planet) choosePlanet(result.planet)
-    if (result.kind === 'MISSION') setView('missions')
+    if (result.kind === 'MISSION') {
+      const mission = missions.find(item => item.name === result.name)
+      if (mission) setSelectedMission(mission)
+      setView('missions')
+      document.getElementById('mission-route')?.scrollIntoView({ behavior: 'smooth' })
+    }
   }
   const moveSimulationDate = (days: number) => setSimulationDate(current => {
     const next = new Date(`${current}T12:00:00`)
@@ -187,14 +343,14 @@ function App() {
     return next.toISOString().slice(0, 10)
   })
   const formattedSimulationDate = new Date(`${simulationDate}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }).toUpperCase()
-  const dateOffsetDays = (new Date(`${simulationDate}T12:00:00`).getTime() - new Date('2026-09-28T12:00:00').getTime()) / 86_400_000
-  return <main className="app-shell">
+  const dateOffsetDays = (new Date(`${simulationDate}T12:00:00Z`).getTime() - J2000_UNIX_MS) / 86_400_000
+  return <main className="app-shell" onClickCapture={event => { if (soundEnabled && (event.target as HTMLElement).closest('button')) playUiSound() }}>
     <header className="topbar">
-      <a className="brand" href="#top" onClick={() => setView('explore')} aria-label="Helios home"><span className="brand-mark"><Sun size={18} /></span><span>helios<span className="brand-dot">.</span></span></a>
+      <a className="brand" href="#top" onClick={() => setView('explore')} aria-label="Helios home"><span className="brand-mark"><Orbit size={18} /></span><span>helios<span className="brand-dot">.</span></span></a>
       <nav className={mobileMenu ? 'nav-links nav-open' : 'nav-links'} aria-label="Main navigation">
         {(['explore','planets','missions','compare'] as View[]).map(item => <button key={item} onClick={() => { setView(item); setMobileMenu(false) }} className={view === item ? 'nav-item active' : 'nav-item'}>{item === 'explore' ? 'Explore' : item === 'planets' ? 'Planets' : item === 'missions' ? 'Missions' : 'Compare'}{view === item && <span className="nav-indicator" />}</button>)}
       </nav>
-      <div className="top-actions"><button className="icon-btn search-trigger" onClick={() => setSearchOpen(!searchOpen)} aria-label="Search the Solar System"><Search size={16} /><span>Search</span><kbd>⌘ K</kbd></button><span className="top-divider" /><button className="icon-btn mobile-menu" onClick={() => setMobileMenu(!mobileMenu)} aria-label="Toggle menu">{mobileMenu ? <X size={19} /> : <Menu size={19} />}</button><a className="github-link" href="https://github.com/krisna-codes37/Helios-SolarSystem" target="_blank" rel="noreferrer" aria-label="GitHub repository"><Github size={17} /></a></div>
+      <div className="top-actions"><button className="icon-btn search-trigger" onClick={() => setSearchOpen(!searchOpen)} aria-label="Search the Solar System"><Search size={16} /><span>Search</span><kbd>⌘ K</kbd></button><button className={soundEnabled?'icon-btn sound-active':'icon-btn'} onClick={toggleSound} aria-label={soundEnabled?'Turn interface sounds off':'Turn interface sounds on'} title={soundEnabled?'Interface sounds on':'Interface sounds off'}>{soundEnabled?<Volume2 size={17}/>:<VolumeX size={17}/>}</button><span className="top-divider" /><button className="icon-btn mobile-menu" onClick={() => setMobileMenu(!mobileMenu)} aria-label="Toggle menu">{mobileMenu ? <X size={19} /> : <Menu size={19} />}</button><a className="github-link" href="https://github.com/krisna-codes37/Helios-SolarSystem" target="_blank" rel="noreferrer" aria-label="GitHub repository"><Github size={17} /></a></div>
     </header>
 
     <AnimatePresence>{searchOpen && <motion.div className="search-popover" initial={{ opacity: 0, y: -7 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -7 }}>
@@ -203,7 +359,7 @@ function App() {
     </motion.div>}</AnimatePresence>
 
     <section className="hero" id="top">
-      <div className="hero-copy"><div className="eyebrow"><span className="live-dot" /> SOLAR SYSTEM OBSERVATORY <span className="eyebrow-line" /></div><h1>Space,<br /><span>within reach.</span></h1><p>Eight planets. One star. Countless stories.<br className="desktop-break" /> Your front-row seat to the Solar System.</p><div className="hero-actions"><button className="primary-button" onClick={() => { setView('explore'); document.getElementById('observatory')?.scrollIntoView({behavior:'smooth'}) }}>Explore the system <ArrowRight size={16} /></button><button className="text-button" onClick={() => setView('planets')}>Meet the planets <ArrowUpRight size={15} /></button></div><div className="hero-note"><span className="note-icon"><Globe2 size={15} /></span><span>Our cosmic neighborhood, <strong>made explorable.</strong></span></div></div>
+      <div className="hero-copy"><div className="eyebrow"><span className="live-dot" /> SOLAR SYSTEM OBSERVATORY <span className="eyebrow-line" /></div><h1>Space,<br /><span>within reach.</span></h1><p>Explore planetary motion, scale, and gravity across our cosmic neighborhood.</p><div className="hero-actions"><button className="primary-button" onClick={() => { setView('explore'); document.getElementById('observatory')?.scrollIntoView({behavior:'smooth'}) }}>Explore the system <ArrowRight size={16} /></button><button className="text-button" onClick={() => setView('planets')}>Meet the planets <ArrowUpRight size={15} /></button></div><div className="hero-note"><span className="note-icon"><Globe2 size={15} /></span><span>Our cosmic neighborhood, <strong>made explorable.</strong></span></div></div>
       <div className="hero-art" aria-hidden="true"><div className="hero-glow" /><div className="hero-planet" /><div className="hero-ring ring-one" /><div className="hero-ring ring-two" /><span className="hero-star s1">✦</span><span className="hero-star s2">·</span><span className="hero-star s3">✧</span><span className="hero-star s4">·</span><span className="hero-star s5">✦</span><span className="hero-label label-one">EARTH<br /><small>149.6M KM</small></span><span className="hero-label label-two">SATURN<br /><small>1.4B KM</small></span><span className="hero-coordinate">SOL / 00:00:01</span></div>
     </section>
 
@@ -211,23 +367,24 @@ function App() {
 
     <section className="observatory section-wrap" id="observatory">
       <div className="section-heading"><div><div className="eyebrow"><span className="section-number">01</span> YOUR WINDOW TO THE COSMOS</div><h2>The Solar System,<br /><span>in motion.</span></h2></div><p>Pick a world. Follow its orbit.<br />See our neighborhood differently.</p></div>
-      <div className="explorer-shell">
-        <div className="explorer-topline"><div className="window-dots"><i /><i /><i /></div><div className="scene-title"><span className="live-dot" /> LIVE SIMULATION <span className="scene-separator">/</span> HELIOCENTRIC VIEW</div><button className="scene-expand" aria-label="Reset camera" onClick={() => setSelected(planets[2])}><RotateCcw size={15} /></button></div>
+      <div className={pseudoFullscreen?'explorer-shell pseudo-fullscreen':'explorer-shell'}>
+        <div className="explorer-topline"><div className="window-dots"><i /><i /><i /></div><div className="scene-title"><span className="live-dot" /> KEPLERIAN MODEL <span className="scene-separator">/</span> HELIOCENTRIC VIEW</div><div className="scene-top-actions"><button className="scene-expand" aria-label="Reset camera to Earth" title="Reset camera to Earth" onClick={() => { setSelected(planets[2]); setFocusRequest(value => value + 1) }}><RotateCcw size={15} /></button><button className="scene-expand" aria-label={isFullscreen||pseudoFullscreen?'Exit full screen':'Explore in full screen'} title={isFullscreen||pseudoFullscreen?'Exit full screen':'Explore in full screen'} onClick={toggleFullscreen}>{isFullscreen||pseudoFullscreen?<X size={16}/>:<Maximize2 size={15}/>}</button></div></div>
         <div className="scene-content" style={{'--scene-display':showOrbits ? 'block' : 'none'} as React.CSSProperties}>
           <div className="scene-backdrop-grid" /><div className="scene-vignette" />
-          <div className="scene-canvas"><Suspense fallback={<div className="canvas-fallback">Preparing the observatory…</div>}><SolarScene selected={selected} setSelected={setSelected} speed={speed} paused={paused} showOrbits={showOrbits} showAsteroids={showAsteroids} compareScale={compareScale} dateOffsetDays={dateOffsetDays} /></Suspense></div>
+          <div className="scene-canvas"><Suspense fallback={<div className="canvas-fallback">Preparing the observatory…</div>}><SolarScene selected={selected} setSelected={setSelected} speed={speed} paused={paused} showOrbits={showOrbits} showAsteroids={showAsteroids} showLabels={showLabels} compareScale={compareScale} elapsedDays={dateOffsetDays} gravityMode={gravityMode} focusRequest={focusRequest+dateOffsetDays} /></Suspense></div>
           <div className="scene-axis axis-x" /><div className="scene-axis axis-y" />
-          <div className="scene-coordinate"><span>SIMULATION DATE</span><strong>{formattedSimulationDate}</strong><div className="date-controls"><button onClick={() => moveSimulationDate(-1)} aria-label="Previous day">−1 D</button><button onClick={() => setSimulationDate('2026-09-28')}>TODAY</button><button onClick={() => moveSimulationDate(1)} aria-label="Next day">+1 D</button></div><small>J2000 · HELIOCENTRIC</small></div>
-          <div className="scene-scale"><span>SCENE SCALE</span><button className={compareScale?'scale-pill':'scale-pill active'} onClick={() => setCompareScale(false)} title="Distances are compressed for readability">Explore</button><button className={compareScale?'scale-pill active':'scale-pill'} onClick={() => setCompareScale(true)} title="Planet sizes are adjusted to be easier to compare">Compare sizes</button></div>
+          <div className="scene-coordinate"><span>SIMULATION DATE</span><strong>{formattedSimulationDate}</strong><div className="date-controls"><button onClick={() => moveSimulationDate(-1)} aria-label="Previous day">−1 D</button><button onClick={() => { setSimulationDate('2026-09-28'); setFocusRequest(value => value + 1) }}>TODAY</button><button onClick={() => moveSimulationDate(1)} aria-label="Next day">+1 D</button></div><small>JPL APPROX. ELEMENTS · J2000 FRAME</small></div>
+          <div className="scene-scale"><span>PLANET SIZE</span><button className={compareScale?'scale-pill':'scale-pill active'} onClick={() => setCompareScale(false)} title="Planet sizes are visible but enlarged relative to the Sun">Visible</button><button className={compareScale?'scale-pill active':'scale-pill'} onClick={() => setCompareScale(true)} title="Planet diameters keep their relative proportions">Relative</button></div>
+          {gravityMode&&<div className="gravity-caption"><strong>SPACETIME CURVATURE · ANALOGY</strong><span>The grid is a 2D slice used to picture curvature. Real spacetime is 4D; this fabric is not a literal surface.</span></div>}
           <AnimatePresence mode="wait">{showPlanetCard && <motion.aside className="planet-card" key={selected.name} initial={{opacity:0,x:14}} animate={{opacity:1,x:0}} exit={{opacity:0,x:8}} transition={{duration:.22}}>
             <div className="card-kicker"><span className="live-dot" /> SELECTED WORLD <button className="bare-icon" aria-label="Close details" onClick={() => setShowPlanetCard(false)}><X size={14} /></button></div><div className="planet-card-title"><span className="mini-planet" style={{background:selected.color}} /><div><span className="planet-type">{selected.type}</span><h3>{selected.name}</h3></div><ArrowUpRight size={15} /></div><p className="planet-desc">{selected.description}</p>
-            <div className="planet-metrics"><div><span>FROM THE SUN</span><strong>{formatDistance(selected.distance)}</strong></div><div><span>ORBITAL PERIOD</span><strong>{selected.period.toLocaleString()} <small>days</small></strong></div><div><span>RADIUS</span><strong>{selected.radius.toLocaleString()} <small>km</small></strong></div><div><span>KNOWN MOONS</span><strong>{selected.moons}</strong></div></div><div className="planet-fact"><span>✳</span><p>{selected.fact}</p></div><button className="card-link" onClick={() => setView('planets')}>Explore {selected.name} <ArrowRight size={14} /></button>
+            <div className="planet-metrics"><div><span>MEAN DISTANCE</span><strong>{formatDistance(selected.distance)}</strong></div><div><span>SIDEREAL YEAR</span><strong>{selected.period.toLocaleString()} <small>days</small></strong></div><div><span>MEAN RADIUS</span><strong>{selected.radius.toLocaleString()} <small>km</small></strong></div><div><span>KNOWN MOONS</span><strong>{selected.moons}</strong></div><div><span>ORBIT ECCENTRICITY</span><strong>{selected.eccentricity.toFixed(3)}</strong></div><div><span>ORBIT INCLINATION</span><strong>{selected.inclination.toFixed(2)}°</strong></div><div><span>SIDEREAL ROTATION</span><strong>{Math.abs(selected.rotationHours)>=24?`${(Math.abs(selected.rotationHours)/24).toFixed(1)} d`:`${Math.abs(selected.rotationHours).toFixed(1)} h`} {selected.rotationHours<0&&<small>retrograde</small>}</strong></div></div><div className="planet-fact"><span>✳</span><p>{selected.fact}</p></div><button className="card-link" onClick={() => setView('planets')}>Explore {selected.name} <ArrowRight size={14} /></button>
           </motion.aside>}</AnimatePresence>
-          <div className="scene-legend"><span><i className="legend-star" /> STAR</span><span><i className="legend-orbit" /> ORBIT</span><span><i className="legend-world" /> PLANET</span></div>
+          <div className="scene-legend"><span><i className="legend-star" /> SUN</span><span><i className="legend-orbit" /> KEPLERIAN ORBIT</span><span><i className="legend-world" /> PLANET</span></div>
         </div>
-        <div className="scene-controls"><div className="transport"><button onClick={() => setPaused(!paused)} aria-label={paused?'Play simulation':'Pause simulation'}>{paused ? <Play size={15} fill="currentColor" /> : <Pause size={15} fill="currentColor" />}</button><span className="control-divider" /><button onClick={() => setSpeed(speed >= 10 ? 1 : speed * 2)} className="speed-button"><Zap size={14} /> {speed}× <ChevronDown size={13} /></button><span className="control-divider" /><span className="simulation-state"><span className="live-dot" /> {paused ? 'PAUSED' : 'RUNNING'}</span></div><div className="scene-toggles"><button className={showOrbits?'toggle active':'toggle'} onClick={() => setShowOrbits(!showOrbits)}><span className="toggle-dot" /> Orbits</button><button className={showAsteroids?'toggle active':'toggle'} onClick={() => setShowAsteroids(!showAsteroids)}><span className="toggle-dot" /> Asteroids</button><button className="toggle" onClick={() => document.getElementById('moon-explorer')?.scrollIntoView({behavior:'smooth'})}><Plus size={14} /> Moons</button><button className="control-reset" onClick={() => { setPaused(false); setSpeed(1); setSelected(planets[2]); setShowPlanetCard(true); setSimulationDate('2026-09-28') }} aria-label="Reset simulation"><RotateCcw size={15} /></button></div></div>
+        <div className="scene-controls"><div className="transport"><button onClick={() => setPaused(value => !value)} aria-label={paused?'Play simulation':'Pause simulation'}>{paused ? <Play size={15} fill="currentColor" /> : <Pause size={15} fill="currentColor" />}</button><span className="control-divider" /><button onClick={() => setSpeed(value => value >= 1000 ? 1 : value * 10)} className="speed-button" title="Simulation rate: simulated days per real second"><Zap size={14} /> {speed}× <ChevronDown size={13} /></button><span className="control-divider" /><span className="simulation-state"><span className={paused?'':'live-dot'} /> {paused ? 'PAUSED' : `${(2*speed).toLocaleString()} SIM DAYS / SEC`}</span></div><div className="scene-toggles"><button className={showOrbits?'toggle active':'toggle'} onClick={() => setShowOrbits(value => !value)} aria-pressed={showOrbits}><span className="toggle-dot" /> Orbits</button><button className={showAsteroids?'toggle active':'toggle'} onClick={() => setShowAsteroids(value => !value)} aria-pressed={showAsteroids}><span className="toggle-dot" /> Asteroids</button><button className={showLabels?'toggle active':'toggle'} onClick={() => setShowLabels(value => !value)} aria-pressed={showLabels}>Tags {showLabels?'On':'Off'}</button><button className={gravityMode?'toggle active':'toggle'} onClick={() => setGravityMode(value => !value)} aria-pressed={gravityMode}>Einstein view</button><button className="toggle" onClick={() => document.getElementById('moon-explorer')?.scrollIntoView({behavior:'smooth'})}><Plus size={14} /> Moons</button><button className="control-reset" onClick={() => { setPaused(false); setSpeed(1); setSelected(planets[2]); setShowPlanetCard(true); setSimulationDate('2026-09-28'); setFocusRequest(value => value + 1) }} aria-label="Reset simulation"><RotateCcw size={15} /></button></div></div>
       </div>
-      <div className="explorer-footnote"><span>✳</span> Distances and sizes are scaled for exploration. <a href="#about">Learn about our scale <ArrowUpRight size={12} /></a><span className="drag-hint"><span className="drag-icon">✥</span> DRAG TO ORBIT <span className="drag-sep">·</span> SCROLL TO ZOOM</span></div>
+      <div className="explorer-footnote"><span>✳</span> Dates use JPL’s approximate Kepler elements (1800–2050 model); solar-system distances are proportional in AU. Planet and Sun radii are enlarged for visibility. <a href="#about">Model notes <ArrowUpRight size={12} /></a><span className="drag-hint"><span className="drag-icon">✥</span> DRAG TO ORBIT <span className="drag-sep">·</span> SCROLL TO ZOOM</span></div>
     </section>
 
     <section className="worlds-section section-wrap">
@@ -257,7 +414,7 @@ function App() {
 
     {view!=='explore'&&<div className="view-drawer"><div className="drawer-head"><div><span className="planet-type">HELIOS / FIELD NOTES</span><h2>{view==='planets'?'Planet index':view==='missions'?'Mission archive':'Comparison lab'}</h2></div><button className="icon-btn" onClick={()=>setView('explore')} aria-label="Close"><X size={18}/></button></div>{view==='planets'?<div className="drawer-planet-list">{planets.map(p=><button key={p.name} onClick={()=>choosePlanet(p)}><span className="drawer-orb" style={{background:p.color}}/><span><strong>{p.name}</strong><small>{p.type} · {formatDistance(p.distance)}</small></span><ArrowUpRight size={15}/></button>)}</div>:view==='missions'?<div className="drawer-missions">{missions.map(m=><article key={m.name}><span className="planet-type">{m.year} / {m.agency}</span><h3>{m.name}</h3><p>{m.detail}</p><div><span>TARGET</span><strong>{m.target}</strong><span className="mission-status"><i/>{m.status}</span></div></article>)}</div>:<div className="drawer-compare"><p>Choose two worlds to compare their size, gravity, day length, and orbit.</p><div className="drawer-pickers"><label>WORLD A<select value={selected.name} onChange={e=>setSelected(planets.find(p=>p.name===e.target.value)!)}>{planets.map(p=><option key={p.name}>{p.name}</option>)}</select></label><span>VS</span><label>WORLD B<select value={compare.name} onChange={e=>setCompare(planets.find(p=>p.name===e.target.value)!)}>{planets.map(p=><option key={p.name}>{p.name}</option>)}</select></label></div><div className="drawer-stat-grid">{[['Radius',`${selected.radius.toLocaleString()} km`,`${compare.radius.toLocaleString()} km`],['Gravity',`${selected.gravity} m/s²`,`${compare.gravity} m/s²`],['Day',selected.day,compare.day],['Year',`${selected.period.toLocaleString()} d`,`${compare.period.toLocaleString()} d`],['Moons',String(selected.moons),String(compare.moons)]].map(row=><div key={row[0]}><span>{row[0]}</span><strong>{row[1]}</strong><strong>{row[2]}</strong></div>)}</div></div>}</div>}
 
-    <footer id="about"><div className="footer-main"><a className="brand" href="#top"><span className="brand-mark"><Sun size={17}/></span><span>helios<span className="brand-dot">.</span></span></a><p>A small observatory for our<br />remarkable cosmic neighborhood.</p><a className="source-link" href="https://science.nasa.gov/solar-system/" target="_blank" rel="noreferrer">Built with NASA Solar System data <ArrowUpRight size={13}/></a></div><div className="footer-meta"><span>PLANETARY FACTS SOURCED FROM NASA / JPL <CircleHelp size={12}/></span><span>VISUAL SCALE IS APPROXIMATED FOR CLARITY</span><span>DESIGNED ON PLANET EARTH <span className="earth-symbol">◉</span></span></div><div className="footer-bottom"><span>© 2026 HELIOS OBSERVATORY</span><span>MADE FOR THE CURIOUS <span className="footer-spark">✳</span></span><button onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>BACK TO TOP <ArrowUpRight size={12}/></button></div></footer>
+    <footer id="about"><div className="footer-main"><a className="brand" href="#top"><span className="brand-mark"><Orbit size={17}/></span><span>helios<span className="brand-dot">.</span></span></a><p>A small observatory for our<br />remarkable cosmic neighborhood.</p><a className="source-link" href="https://science.nasa.gov/solar-system/" target="_blank" rel="noreferrer">Built with NASA Solar System data <ArrowUpRight size={13}/></a></div><div className="footer-meta"><span>PLANETARY FACTS SOURCED FROM NASA / JPL <CircleHelp size={12}/></span><span>JPL APPROXIMATE PLANETARY POSITIONS / KEPLER SOLVER</span><span>DESIGNED ON PLANET EARTH <span className="earth-symbol">◉</span></span></div><div className="footer-bottom"><span>© 2026 HELIOS OBSERVATORY</span><span>DEVELOPED BY KRISHNA MANDAL</span><button onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>BACK TO TOP <ArrowUpRight size={12}/></button></div></footer>
   </main>
 }
 
